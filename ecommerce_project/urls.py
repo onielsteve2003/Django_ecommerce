@@ -24,6 +24,7 @@ urlpatterns = [
     path('api/auth/', include('store.urls.user')),
     path('api/products/', include('store.urls.product')),
     path('api/categories/', include('store.urls.category')),
+    path('api/orders/', include('store.urls.order')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
 if settings.DEBUG:  # Only serve media files during development

@@ -830,3 +830,100 @@ class CategoryDeleteTestCase(APITestCase):
         # Verify that the other user's category is not deleted
         self.assertTrue(Category.objects.filter(id=self.other_category.id).exists())
 
+class OrderCreateViewTests(APITestCase):
+    def setUp(self):
+        self.user = CustomUser.objects.create_user(
+            email='testuser@example.com',
+            password='testpassword'
+        )
+        self.token = self._get_jwt_token(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION='Bearer ' + self.token)
+
+        self.category = Category.objects.create(
+            name='Test Category',
+            created_by=self.user
+        )
+
+        self.product = Product.objects.create(
+            name='Test Product',
+            description='A description of the test product',
+            price=10.00,
+            stock_quantity=100,
+            category=self.category,
+            image=None,
+            created_by=self.user
+        )
+
+        self.create_order_url = reverse('order-create')
+
+    def _get_jwt_token(self, user):
+        refresh = RefreshToken.for_user(user)
+        return str(refresh.access_token)
+
+    def test_successful_order_creation(self):
+        order_data = {
+            'user_id': self.user.id,
+            'products': [
+                {'product_id': self.product.id, 'quantity': 2, 'price': 20.00}
+            ],
+            'shipping_address': '123 Test Lane',
+            'payment_method': 'Credit Card'
+        }
+        response = self.client.post(self.create_order_url, order_data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['code'], status.HTTP_201_CREATED)
+        self.assertEqual(response.data['message'], 'Order successfully created')
+        self.assertTrue(response.data['success'])
+
+    def test_invalid_product(self):
+        order_data = {
+            'user_id': self.user.id,
+            'products': [
+                {'product_id': 9999, 'quantity': 1, 'price': 10.00}  # Non-existent product
+            ],
+            'shipping_address': '123 Test Lane',
+            'payment_method': 'Credit Card'
+        }
+        response = self.client.post(self.create_order_url, order_data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('product_9999', response.data['data'])
+
+    def test_insufficient_stock(self):
+        order_data = {
+            'user_id': self.user.id,
+            'products': [
+                {'product_id': self.product.id, 'quantity': 200, 'price': 2000.00}  # Exceeds stock
+            ],
+            'shipping_address': '123 Test Lane',
+            'payment_method': 'Credit Card'
+        }
+        response = self.client.post(self.create_order_url, order_data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn(f'product_{self.product.id}', response.data['data'])
+
+    def test_invalid_price(self):
+        order_data = {
+            'user_id': self.user.id,
+            'products': [
+                {'product_id': self.product.id, 'quantity': 2, 'price': 15.00}  # Incorrect price
+            ],
+            'shipping_address': '123 Test Lane',
+            'payment_method': 'Credit Card'
+        }
+        response = self.client.post(self.create_order_url, order_data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn(f'product_{self.product.id}_price', response.data['data'])
+
+    def test_invalid_payment_method(self):
+        order_data = {
+            'user_id': self.user.id,
+            'products': [
+                {'product_id': self.product.id, 'quantity': 1, 'price': 10.00}
+            ],
+            'shipping_address': '123 Test Lane',
+            'payment_method': 'Invalid Method'
+        }
+        response = self.client.post(self.create_order_url, order_data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('payment_method', response.data['data'])
+
