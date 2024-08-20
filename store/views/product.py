@@ -1,5 +1,5 @@
 from rest_framework.pagination import PageNumberPagination
-from ..models import Product
+from ..models import Product, Category
 from rest_framework.permissions import IsAuthenticated
 from ..serializers import ProductSerializer
 from rest_framework import status, generics
@@ -37,26 +37,24 @@ class ProductPagination(PageNumberPagination):
 
 class ProductListView(APIView):
     def get(self, request):
-        # Pagination parameters
-        page = request.query_params.get('page', 1)
-        limit = request.query_params.get('limit', 10)
-        
         # Filtering parameters
-        category = request.query_params.get('category')
+        category_name = request.query_params.get('category')
         min_price = request.query_params.get('min_price')
         max_price = request.query_params.get('max_price')
         
         # Querying the database
         products = Product.objects.all()
-        
-        if category:
-            products = products.filter(category=category)
+
+        if category_name:
+            # Filter by category name, ensure it's a valid Category instance
+            category = Category.objects.filter(name=category_name).first()
+            if category:
+                products = products.filter(category=category)
         if min_price and max_price:
             products = products.filter(price__gte=min_price, price__lte=max_price)
         
         # Pagination
-        paginator = PageNumberPagination()
-        paginator.page_size = limit
+        paginator = ProductPagination()  # Use your custom pagination class
         result_page = paginator.paginate_queryset(products, request)
         
         serializer = ProductSerializer(result_page, many=True)
@@ -65,7 +63,9 @@ class ProductListView(APIView):
             'code': 200,
             'message': 'Successfully retrieved all products',
             'data': {
-                'products': serializer.data
+                'products': serializer.data,
+                'next': paginator.get_next_link(),  # Pagination metadata
+                'previous': paginator.get_previous_link(),  # Pagination metadata
             },
             'success': True
         }

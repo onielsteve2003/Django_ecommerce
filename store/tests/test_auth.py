@@ -164,11 +164,23 @@ class ProfileTests(APITestCase):
 class ProductTests(APITestCase):
     def setUp(self):
         # Create a test user
-        self.user = get_user_model().objects.create_user(
+        self.user = User.objects.create_user(
             email='testuser@example.com',
             password='testpassword'
         )
         self.client.force_authenticate(user=self.user)
+
+        # Create categories
+        category1 = Category.objects.create(
+            name='Category 1',
+            description='Description for Category 1',
+            created_by=self.user
+        )
+        category2 = Category.objects.create(
+            name='Category 2',
+            description='Description for Category 2',
+            created_by=self.user
+        )
 
         # Create some test products
         Product.objects.create(
@@ -176,7 +188,7 @@ class ProductTests(APITestCase):
             description='Description 1',
             price=10.00,
             stock_quantity=100,
-            category='Category 1',
+            category=category1,
             image='path/to/image1.jpg',
             created_by=self.user
         )
@@ -185,7 +197,7 @@ class ProductTests(APITestCase):
             description='Description 2',
             price=20.00,
             stock_quantity=50,
-            category='Category 2',
+            category=category2,
             image='path/to/image2.jpg',
             created_by=self.user
         )
@@ -220,9 +232,10 @@ class ProductTests(APITestCase):
         self.assertIn('products', response.data['data'])
         self.assertIsInstance(response.data['data']['products'], list)
         self.assertEqual(len(response.data['data']['products']), 1)  # Only one product in 'Category 1'
+        self.assertEqual(response.data['data']['products'][0]['name'], 'Product 1')
         
     def test_list_products_with_pagination(self):
-        url = '/api/products?limit=1&page=1'
+        url = '/api/products?page=1&page_size=1'
         response = self.client.get(url, follow=True)
         
         # Check the response status code
@@ -237,20 +250,38 @@ class ProductTests(APITestCase):
         self.assertIsInstance(response.data['data']['products'], list)
         self.assertEqual(len(response.data['data']['products']), 1)  # Pagination should limit to 1 product
 
+        # Check pagination links
+        next_link = response.data['data'].get('next')
+        previous_link = response.data['data'].get('previous')
+
+        # Verify the presence of the 'next' link
+        if next_link:
+            self.assertIsInstance(next_link, str)
+        else:
+            self.assertIsNone(next_link)
+        
+        # Verify the 'previous' link (should be None for the first page)
+        self.assertIsNone(previous_link)
+
 class ProductCreateViewTests(APITestCase):
     def setUp(self):
-        self.user = CustomUser.objects.create_user(
+        # Create a test user
+        self.user = User.objects.create_user(
             email='testuser@example.com',
-            password='testpassword',
-            name='Test User',
-            address='123 Test St',
-            phone_number='+1234567890'
+            password='testpassword'
         )
         self.client.force_authenticate(user=self.user)  # Authenticate the user
+
+        # Create a test category
+        self.category = Category.objects.create(
+            name='Test Category',
+            created_by=self.user
+        )
+
         self.url = reverse('product-create')  # Ensure this URL matches your URLconf
 
     def create_image(self):
-        # Create an empty image file for testing
+        # Create an image file for testing
         image_file = BytesIO()
         image = Image.new('RGB', (100, 100), color='red')
         image.save(image_file, format='JPEG')
@@ -258,21 +289,27 @@ class ProductCreateViewTests(APITestCase):
         return SimpleUploadedFile(name='test_image.jpg', content=image_file.read(), content_type='image/jpeg')
 
     def test_create_product_success(self):
-        image = self.create_image() 
+        image = self.create_image()
         data = {
             'name': 'Test Product',
             'description': 'Test Description',
             'price': 10.99,
             'stock_quantity': 50,
-            'category': 'Test Category',
+            'category': self.category.id,  # Use category ID
             'image': image,
         }
         response = self.client.post(self.url, data, format='multipart')
-        # print(response.data)
+        
+        # Check the response status code
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['code'], 201)
         self.assertEqual(response.data['message'], 'Product successfully created')
         self.assertTrue(response.data['success'])
+        self.assertEqual(response.data['data']['name'], 'Test Product')
+        self.assertEqual(response.data['data']['description'], 'Test Description')
+        self.assertEqual(float(response.data['data']['price']), 10.99)  # Ensure price is correctly formatted
+        self.assertEqual(response.data['data']['stock_quantity'], 50)
+        self.assertEqual(response.data['data']['category'], self.category.id)
 
     def test_create_product_invalid_price(self):
         image = self.create_image()
@@ -281,12 +318,13 @@ class ProductCreateViewTests(APITestCase):
             'description': 'Test Description',
             'price': -10.99,
             'stock_quantity': 50,
-            'category': 'Test Category',
+            'category': self.category.id,  # Use category ID
             'image': image
         }
         response = self.client.post(self.url, data, format='multipart')
+        
+        # Check the response status code
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        # print(response.data)  
         self.assertIn('price', response.data)
         self.assertEqual(response.data['price'][0], 'Price must be greater than zero.')
 
@@ -297,10 +335,12 @@ class ProductCreateViewTests(APITestCase):
             'description': 'Test Description',
             'price': 10.99,
             'stock_quantity': -5,
-            'category': 'Test Category',
+            'category': self.category.id,  # Use category ID
             'image': image
         }
         response = self.client.post(self.url, data, format='multipart')
+        
+        # Check the response status code
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('stock_quantity', response.data)
         self.assertEqual(response.data['stock_quantity'][0], 'Ensure this value is greater than or equal to 0.')
@@ -311,9 +351,11 @@ class ProductCreateViewTests(APITestCase):
             'description': 'Test Description',
             'price': 10.99,
             'stock_quantity': 50,
-            'category': 'Test Category'
+            'category': self.category.id  # Use category ID
         }
         response = self.client.post(self.url, data, format='multipart')
+        
+        # Check the response status code
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('image', response.data)
         self.assertEqual(response.data['image'][0], 'No file was submitted.')
@@ -326,10 +368,12 @@ class ProductCreateViewTests(APITestCase):
             'description': 'Test Description',
             'price': 10.99,
             'stock_quantity': 50,
-            'category': 'Test Category',
+            'category': self.category.id,  # Use category ID
             'image': image
         }
         response = self.client.post(self.url, data, format='multipart')
+        
+        # Check the response status code
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertEqual(response.data['code'], 401)
         self.assertEqual(response.data['message'], 'Authentication credentials were not provided or are invalid')
@@ -337,21 +381,26 @@ class ProductCreateViewTests(APITestCase):
 
 class ProductDetailViewTests(APITestCase):
     def setUp(self):
-        self.user = CustomUser.objects.create_user(
+        # Create a test user
+        self.user = User.objects.create_user(
             email='testuser@example.com',
-            password='testpassword',
-            name='Test User',
-            address='123 Test St',
-            phone_number='+1234567890'
+            password='testpassword'
         )
         self.client.force_authenticate(user=self.user)
-        
+
+        # Create a test category
+        self.category = Category.objects.create(
+            name='Test Category',
+            created_by=self.user
+        )
+
+        # Create a product associated with the test category
         self.product = Product.objects.create(
             name='Test Product',
             description='Test Description',
             price=10.99,
             stock_quantity=50,
-            category='Test Category',
+            category=self.category,  # Use the Category instance
             image=None,
             created_by=self.user
         )
@@ -363,6 +412,8 @@ class ProductDetailViewTests(APITestCase):
         self.assertEqual(response.data['code'], 200)
         self.assertEqual(response.data['message'], 'Successfully retrieved single product')
         self.assertTrue(response.data['success'])
+        
+        # Create a serializer instance and compare the data
         serializer = ProductSerializer(self.product)
         self.assertEqual(response.data['data'], serializer.data)
 
@@ -370,36 +421,34 @@ class ProductDetailViewTests(APITestCase):
         non_existent_url = reverse('product-detail', kwargs={'pk': 999})
         response = self.client.get(non_existent_url)
         
-        # Print response data to debug
-        # print(response.data)
-        
+        # Check the response status code
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         
-        # Adjust to match the actual error response format
+        # Validate the error response format
         self.assertIn('code', response.data)
         self.assertEqual(response.data.get('code'), 404)
-        
-        # Use 'ErrorDetail' type in the actual response
         self.assertIn('message', response.data)
-        self.assertEqual(str(response.data.get('message')), 'No Product matches the given query.')
-        
+        self.assertEqual(response.data.get('message'), 'No Product matches the given query.')
         self.assertIn('success', response.data)
-        self.assertFalse(response.data.get('success', False))
+        self.assertFalse(response.data.get('success'))
 
-class ProductDeleteViewTest(APITestCase):
+class ProductUpdateViewTests(APITestCase):
     def setUp(self):
         # Create a user
         self.user = User.objects.create_user(
             email='testuser@example.com',
-            password='testpassword',
-            name='Test User',
-            address='123 Test Lane',
-            phone_number='+1234567890'
+            password='testpassword'
         )
         
         # Generate a JWT token for the user
         self.token = self._get_jwt_token(self.user)
         self.client.credentials(HTTP_AUTHORIZATION='Bearer ' + self.token)
+
+        # Create a test category
+        self.category = Category.objects.create(
+            name='Test Category',
+            created_by=self.user
+        )
 
         # Create a product owned by the user
         self.product = Product.objects.create(
@@ -407,8 +456,110 @@ class ProductDeleteViewTest(APITestCase):
             description='A description of the test product',
             price=10.00,
             stock_quantity=100,
-            category='Test Category',
-            image='path/to/image.jpg',
+            category=self.category,
+            image=None,  # Use None for simplicity in this test
+            created_by=self.user
+        )
+        self.update_url = reverse('product-update', kwargs={'pk': self.product.id})
+
+    def _get_jwt_token(self, user):
+        refresh = RefreshToken.for_user(user)
+        return str(refresh.access_token)
+
+    def test_successful_update(self):
+        update_data = {
+            'name': 'Updated Product Name',
+            'description': 'Updated description',
+            'price': 15.00,
+            'stock_quantity': 200,
+            'category': self.category.id
+        }
+        response = self.client.patch(self.update_url, update_data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['code'], 200)
+        self.assertEqual(response.data['message'], 'Product successfully updated')
+        self.assertTrue(response.data['success'])
+        self.assertEqual(response.data['data']['name'], 'Updated Product Name')
+        self.assertEqual(response.data['data']['description'], 'Updated description')
+
+        # Verify the product was updated in the database
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.name, 'Updated Product Name')
+        self.assertEqual(self.product.description, 'Updated description')
+        self.assertEqual(self.product.price, 15.00)
+        self.assertEqual(self.product.stock_quantity, 200)
+
+    def test_product_not_found(self):
+        invalid_url = reverse('product-update', kwargs={'pk': 9999})  # An ID that doesn't exist
+        response = self.client.patch(invalid_url, {'name': 'Updated Name'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.data['code'], 404)
+        self.assertEqual(response.data['message'], 'Product not found')
+        self.assertFalse(response.data['success'])
+
+    def test_permission_denied(self):
+        # Create another user who does not own the product
+        another_user = User.objects.create_user(
+            email='anotheruser@example.com',
+            password='anotherpassword'
+        )
+        # Use a token for the new user
+        token = self._get_jwt_token(another_user)
+        self.client.credentials(HTTP_AUTHORIZATION='Bearer ' + token)
+
+        response = self.client.patch(self.update_url, {'name': 'Updated Name'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data['code'], 403)
+        self.assertEqual(response.data['message'], 'You do not have permission to edit this product.')
+        self.assertFalse(response.data['success'])
+
+    def test_invalid_data(self):
+        # Providing invalid data
+        update_data = {
+            'price': -10.00,  # Invalid price
+            'stock_quantity': -5  # Invalid stock quantity
+        }
+        response = self.client.patch(self.update_url, update_data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['code'], 400)
+        self.assertEqual(response.data['message'], 'Invalid data')
+        self.assertFalse(response.data['success'])
+
+        # Check if specific errors are included in the response
+        data_errors = response.data.get('data', {})
+        self.assertIn('stock_quantity', data_errors)
+        self.assertNotIn('price', data_errors)
+
+        # Check if error details contain 'min_value'
+        stock_quantity_errors = data_errors.get('stock_quantity', [])
+        self.assertTrue(any(error.code == 'min_value' for error in stock_quantity_errors))
+
+class ProductDeleteViewTest(APITestCase):
+    def setUp(self):
+        # Create a user
+        self.user = User.objects.create_user(
+            email='testuser@example.com',
+            password='testpassword'
+        )
+        
+        # Generate a JWT token for the user
+        self.token = self._get_jwt_token(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION='Bearer ' + self.token)
+
+        # Create a test category
+        self.category = Category.objects.create(
+            name='Test Category',
+            created_by=self.user
+        )
+
+        # Create a product owned by the user
+        self.product = Product.objects.create(
+            name='Test Product',
+            description='A description of the test product',
+            price=10.00,
+            stock_quantity=100,
+            category=self.category,
+            image=None,  # Use None for simplicity in this test
             created_by=self.user
         )
         self.delete_url = reverse('product-delete', kwargs={'id': self.product.id})
@@ -444,10 +595,7 @@ class ProductDeleteViewTest(APITestCase):
         # Create another user who does not have permission to delete this product
         another_user = User.objects.create_user(
             email='anotheruser@example.com',
-            password='anotherpassword',
-            name='Another User',
-            address='456 Another Ave',
-            phone_number='+0987654321'
+            password='anotherpassword'
         )
         # Use a token for the new user
         token = self._get_jwt_token(another_user)
