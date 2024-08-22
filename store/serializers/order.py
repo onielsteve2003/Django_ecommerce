@@ -6,9 +6,6 @@ class OrderItemSerializer(serializers.ModelSerializer):
         model = OrderItem
         fields = ['product', 'quantity', 'price']
 
-from rest_framework import serializers
-from store.models import OrderItem, Product, Order, CustomUser
-
 class OrderCreateSerializer(serializers.Serializer):
     user_id = serializers.IntegerField()
     products = serializers.ListField(
@@ -93,4 +90,35 @@ class OrderCreateSerializer(serializers.Serializer):
             print(f"Unexpected Error: {e}")
             raise
 
+class OrderListSerializer(serializers.ModelSerializer):
+    items = OrderItemSerializer(many=True)  # Nested serializer for order items
 
+    class Meta:
+        model = Order
+        fields = ['id', 'created_at', 'shipping_address', 'payment_method', 'total_price', 'items']
+
+class OrderItemDetailSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OrderItem
+        fields = ['product', 'quantity', 'price']
+
+class OrderDetailSerializer(serializers.ModelSerializer):
+    items = OrderItemDetailSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Order
+        fields = ['id', 'user', 'created_at', 'shipping_address', 'payment_method', 'total_price', 'shipping_status', 'items']
+
+class OrderStatusUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Order
+        fields = ['shipping_status']
+
+    def validate_shipping_status(self, value):
+        if self.instance.shipping_status == 'cancelled':
+            raise serializers.ValidationError("Cannot change status of a cancelled order.")
+        if self.instance.shipping_status == 'delivered' and value != 'delivered':
+            raise serializers.ValidationError("Cannot change status of a delivered order.")
+        if self.instance.shipping_status == 'pending' and value not in ['shipped', 'cancelled']:
+            raise serializers.ValidationError("Invalid status transition.")
+        return value

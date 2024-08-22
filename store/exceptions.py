@@ -17,7 +17,7 @@ def custom_exception_handler(exc, context):
         # Customize specific status codes
         if response.status_code == 401:
             response_data['message'] = "Authentication credentials were not provided or are invalid"
-        elif response.status_code == 403:
+        elif response.status_code == 403:   
             response_data['message'] = "You do not have permission to perform this action"
         response.data = response_data
     else:

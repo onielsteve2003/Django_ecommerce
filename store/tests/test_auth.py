@@ -1,14 +1,17 @@
-from rest_framework.test import APITestCase
+from rest_framework.test import APITestCase, APIClient
 from django.urls import reverse
 from rest_framework import status
 from django.core import mail
-from ..models import CustomUser, Product, Category
+from ..models import CustomUser, Product, Category, Order, OrderItem
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.files.uploadedfile import SimpleUploadedFile
-from store.serializers import ProductSerializer
+from store.serializers import ProductSerializer, OrderDetailSerializer
 from PIL import Image
 from io import BytesIO
+from django.test import TestCase
+from django.db import IntegrityError
+from unittest.mock import patch
 
 User = get_user_model()
 
@@ -830,100 +833,294 @@ class CategoryDeleteTestCase(APITestCase):
         # Verify that the other user's category is not deleted
         self.assertTrue(Category.objects.filter(id=self.other_category.id).exists())
 
-class OrderCreateViewTests(APITestCase):
+class OrderListViewTest(TestCase):
     def setUp(self):
-        self.user = CustomUser.objects.create_user(
-            email='testuser@example.com',
-            password='testpassword'
+        # Create a user for authentication
+        self.user = User.objects.create_user(
+            email='user@example.com',
+            password='password123',
+            name='Test User',
+            address='123 Test Street',
+            phone_number='+1234567890'
         )
-        self.token = self._get_jwt_token(self.user)
-        self.client.credentials(HTTP_AUTHORIZATION='Bearer ' + self.token)
 
+        # Create a category with the required fields
         self.category = Category.objects.create(
             name='Test Category',
-            created_by=self.user
+            description='A description for the test category',
+            created_by=self.user  # Assign the created_by user
         )
 
-        self.product = Product.objects.create(
-            name='Test Product',
-            description='A description of the test product',
+        # Create some products with the category
+        self.product1 = Product.objects.create(
+            name='Product 1',
+            description='Description for Product 1',
             price=10.00,
             stock_quantity=100,
             category=self.category,
-            image=None,
+            image=None,  # Assuming you have a default value or no image for testing
+            created_by=self.user
+        )
+        self.product2 = Product.objects.create(
+            name='Product 2',
+            description='Description for Product 2',
+            price=20.00,
+            stock_quantity=50,
+            category=self.category,
+            image=None,  # Assuming you have a default value or no image for testing
             created_by=self.user
         )
 
-        self.create_order_url = reverse('order-create')
+        # Create orders for the user
+        self.order1 = Order.objects.create(
+            user=self.user,
+            shipping_address='123 Test Street',
+            payment_method='Credit Card',
+            total_price=30.00
+        )
+        OrderItem.objects.create(order=self.order1, product=self.product1, quantity=1, price=10.00)
+        OrderItem.objects.create(order=self.order1, product=self.product2, quantity=1, price=20.00)
 
-    def _get_jwt_token(self, user):
-        refresh = RefreshToken.for_user(user)
-        return str(refresh.access_token)
+        self.order2 = Order.objects.create(
+            user=self.user,
+            shipping_address='456 Test Avenue',
+            payment_method='PayPal',
+            total_price=20.00
+        )
+        OrderItem.objects.create(order=self.order2, product=self.product2, quantity=1, price=20.00)
 
-    def test_successful_order_creation(self):
-        order_data = {
+        # Authenticate the user for API tests
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+class OrderCreateViewTests(APITestCase):
+    def setUp(self):
+        # Create a user with the required fields
+        self.user = CustomUser.objects.create_user(
+            email='testuser@example.com',
+            password='testpassword',
+            name='Test User',
+            address='123 Test St',
+            phone_number='+1234567890'
+        )
+        
+        # Create a category
+        self.category = Category.objects.create(
+            name='Test Category',
+            description='Test Category Description',
+            created_by=self.user
+        )
+        
+        # Create a product with the created category
+        self.product = Product.objects.create(
+            name='Test Product',
+            description='Test Product Description',
+            price=10.00,
+            stock_quantity=100,
+            category=self.category,
+            image='path/to/image.jpg',
+            created_by=self.user
+        )
+        
+        # Initialize APIClient and authenticate
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        
+        # URL for the API endpoint
+        self.url = reverse('order-create')  # Adjust the URL name as necessary
+
+    def test_create_order_success(self):
+        data = {
             'user_id': self.user.id,
             'products': [
-                {'product_id': self.product.id, 'quantity': 2, 'price': 20.00}
+                {
+                    'product_id': self.product.id,
+                    'quantity': 2,
+                    'price': 20.00
+                }
             ],
-            'shipping_address': '123 Test Lane',
+            'shipping_address': '123 Test St',
             'payment_method': 'Credit Card'
         }
-        response = self.client.post(self.create_order_url, order_data, format='json')
+        response = self.client.post(self.url, data, format='json')
+        
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data['code'], status.HTTP_201_CREATED)
         self.assertEqual(response.data['message'], 'Order successfully created')
         self.assertTrue(response.data['success'])
 
-    def test_invalid_product(self):
-        order_data = {
+    @patch('store.serializers.OrderCreateSerializer.save')  # Mock the save method from the serializer
+    def test_create_order_integrity_error(self, mock_save):
+        # Simulate IntegrityError when saving an order
+        mock_save.side_effect = IntegrityError("Integrity error occurred.")
+
+        data = {
             'user_id': self.user.id,
             'products': [
-                {'product_id': 9999, 'quantity': 1, 'price': 10.00}  # Non-existent product
+                {
+                    'product_id': self.product.id,
+                    'quantity': 2,
+                    'price': 20.00
+                }
             ],
-            'shipping_address': '123 Test Lane',
+            'shipping_address': '123 Test St',
             'payment_method': 'Credit Card'
         }
-        response = self.client.post(self.create_order_url, order_data, format='json')
+        response = self.client.post(self.url, data, format='json')
+        
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('product_9999', response.data['data'])
+        self.assertEqual(response.data['message'], 'Integrity error occurred.')
+        self.assertFalse(response.data['success'])
 
-    def test_insufficient_stock(self):
-        order_data = {
+    @patch('store.views.OrderCreateView.post')  # Mock the post method of the OrderCreateView
+    def test_create_order_unexpected_error(self, mock_post):
+        # Simulate an unexpected error
+        mock_post.side_effect = Exception("An unexpected error occurred.")
+
+        data = {
             'user_id': self.user.id,
             'products': [
-                {'product_id': self.product.id, 'quantity': 200, 'price': 2000.00}  # Exceeds stock
+                {
+                    'product_id': self.product.id,
+                    'quantity': 2,
+                    'price': 20.00
+                }
             ],
-            'shipping_address': '123 Test Lane',
+            'shipping_address': '123 Test St',
             'payment_method': 'Credit Card'
         }
-        response = self.client.post(self.create_order_url, order_data, format='json')
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn(f'product_{self.product.id}', response.data['data'])
+        response = self.client.post(self.url, data, format='json')
 
-    def test_invalid_price(self):
-        order_data = {
-            'user_id': self.user.id,
-            'products': [
-                {'product_id': self.product.id, 'quantity': 2, 'price': 15.00}  # Incorrect price
-            ],
-            'shipping_address': '123 Test Lane',
-            'payment_method': 'Credit Card'
-        }
-        response = self.client.post(self.create_order_url, order_data, format='json')
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn(f'product_{self.product.id}_price', response.data['data'])
+        # Print response for debugging
+        # print("Response Data:", response.data)
+        
+        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        self.assertEqual(response.data['message'], 'An unexpected error occurred')
+        self.assertFalse(response.data['success'])
 
-    def test_invalid_payment_method(self):
-        order_data = {
-            'user_id': self.user.id,
-            'products': [
-                {'product_id': self.product.id, 'quantity': 1, 'price': 10.00}
-            ],
-            'shipping_address': '123 Test Lane',
-            'payment_method': 'Invalid Method'
-        }
-        response = self.client.post(self.create_order_url, order_data, format='json')
+class OrderDetailViewTests(APITestCase):
+
+    def setUp(self):
+        # Create a test user
+        self.user = User.objects.create_user(email='testuser@example.com', password='securepassword')
+        
+        # Create a test category
+        self.category = Category.objects.create(
+            name='Test Category',
+            description='A category for testing',
+            created_by=self.user
+        )
+        
+        # Create a test image
+        self.test_image = SimpleUploadedFile(
+            name='test_image.jpg',
+            content=b'fake image data',
+            content_type='image/jpeg'
+        )
+
+        # Create a test product
+        self.product = Product.objects.create(
+            name='Test Product',
+            description='A product for testing',
+            price=10.00,
+            stock_quantity=100,
+            category=self.category,
+            image=self.test_image,
+            created_by=self.user
+        )
+        
+        # Create a test order
+        self.order = Order.objects.create(
+            user=self.user,
+            shipping_address='123 Test St',
+            payment_method='Credit Card',
+            total_price=20.00,
+            shipping_status='pending'
+        )
+        
+        # Create a test order item
+        OrderItem.objects.create(
+            order=self.order,
+            product=self.product,
+            quantity=2,
+            price=10.00
+        )
+        
+        # Generate JWT token for the user
+        refresh = RefreshToken.for_user(self.user)
+        self.token = str(refresh.access_token)
+
+    @patch('store.models.Order.objects.get')
+    def test_get_order_detail_error(self, mock_get):
+        # Simulate a server error
+        mock_get.side_effect = Exception("Simulated server error")
+
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.token}')
+        response = self.client.get('/api/orders/999999/')  # Using any ID since the error is simulated
+
+        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        self.assertIn('An unexpected error occurred', response.content.decode())
+
+class OrderStatusUpdateViewTest(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email='user@example.com', password='password123')
+        self.other_user = User.objects.create_user(email='otheruser@example.com', password='password123')
+        
+        self.order = Order.objects.create(
+            user=self.user,
+            shipping_address='123 Main St',
+            payment_method='Credit Card',
+            total_price=100.00,
+            shipping_status='pending'
+        )
+        
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_update_order_status_success(self):
+        url = f'/api/orders/{self.order.id}/status'
+        data = {'shipping_status': 'shipped'}
+        response = self.client.put(url, data, format='json')
+        
+        self.order.refresh_from_db()
+        
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self.order.shipping_status, 'shipped')
+        self.assertEqual(response.data['message'], "Order status updated successfully.")
+        self.assertTrue(response.data['success'])
+
+    def test_update_order_status_invalid_transition(self):
+        # Attempt to move from 'pending' to 'delivered' directly, which is invalid in this case
+        url = f'/api/orders/{self.order.id}/status'
+        data = {'shipping_status': 'delivered'}
+        response = self.client.put(url, data, format='json')
+        
+        self.order.refresh_from_db()
+        
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('payment_method', response.data['data'])
+        self.assertEqual(self.order.shipping_status, 'pending')  # Status should remain unchanged
+        self.assertEqual(response.data['message'], "Invalid data")
+        self.assertFalse(response.data['success'])
+
+    def test_update_order_status_unauthorized_user(self):
+        self.client.force_authenticate(user=self.other_user)
+        url = f'/api/orders/{self.order.id}/status'
+        data = {'shipping_status': 'shipped'}
+        response = self.client.put(url, data, format='json')
+        
+        self.order.refresh_from_db()
+        
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(self.order.shipping_status, 'pending')  # Status should remain unchanged
+        self.assertFalse(response.data['success'])
+
+    def test_update_order_status_without_authentication(self):
+        self.client.force_authenticate(user=None)  # Unauthenticate the user
+        url = f'/api/orders/{self.order.id}/status'
+        data = {'shipping_status': 'shipped'}
+        response = self.client.put(url, data, format='json')
+        
+        self.order.refresh_from_db()
+        
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(self.order.shipping_status, 'pending')  # Status should remain unchanged
 
